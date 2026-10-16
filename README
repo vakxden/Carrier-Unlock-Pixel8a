@@ -1,0 +1,13 @@
+
+This repo is conactenation of two: Root-My-Pixel and Root-My-Pixel-Pixel6a.
+
+This is the only solution for Google Pixel 8a (akita, build id: CP2A.260805.005)
+
+Files:
+./modules/ksud-pixel - extracted from assets from Root-My-Pixel apk: assets/ksud/ksud
+./binaries/app.so - extracted from assets from Root-My-Pixel apk: assets/exploits/akita-CP2A.260805.005.so
+./binaries/helper - taken from Root-My-Pixel-Pixel6a: binaries/cve-2026-43499-root
+./modules/akita-CP2A.260805.005.ksym.tsv - extracted from Pixel 8a kernel image
+./modules/android14-6.1_kernelsu_v3.3.0.ko - taken from Root-My-Pixel-Pixel6a: ksun/android14-6.1_kernelsu_v3.3.0.ko
+./modules/patch_ko.py - - taken from Root-My-Pixel-Pixel6a: ksun/patch_ko.py
+./tools/carrier-unlock/carrier-unlock.jar - built from from Root-My-Pixel-Pixel6a
