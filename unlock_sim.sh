@@ -159,9 +159,15 @@ sleep 2
 mod=$("$ADB" shell "grep kernelsu /proc/modules")
 log "module: $mod"
 echo "$mod" | grep -q kernelsu || exit 6
-su_output=$("$ADB" -s "$S" shell "echo 'id; getenforce; echo KSU_ROOT_OK' | ${REMOTE_DIR}/ksud-pixel debug su 2>&1")
+su_output=$("$ADB" -shell "echo 'id; getenforce; echo KSU_ROOT_OK' | ${REMOTE_DIR}/ksud-pixel debug su 2>&1")
 log "ksud su output: $su_output"
 echo "$su_output" | grep -q KSU_ROOT_OK && log "=== FULL PIPELINE SUCCESS ===" || log "=== KSU SU FAILED ==="
 
 # 9. "unlock" SIM
-./tools/carrier-unlock/oobconfig_fix.sh
+# commented because found better way
+#./tools/carrier-unlock/oobconfig_fix.sh
+log "unlock SIM: clearing modem rules..."
+unlock_output=$("$ADB" shell "echo service call phone 151 i32 1 i32 0 i32 0 i32 1 i32 0 i32 0 i32 0 i32 0 i32 0 | ${REMOTE_DIR}/ksud-pixel debug su 2>&1")
+log "unlock output: $unlock_output"
+# expected result:
+# Result: Parcel( 00000000 00000000 '........')
