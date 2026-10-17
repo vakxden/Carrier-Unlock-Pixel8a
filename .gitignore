@@ -1,0 +1,4 @@
+# logs and temporary
+*.log
+*.bak
+*.patched.ko
