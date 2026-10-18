@@ -2,6 +2,7 @@
 This repo is conactenation of two: Root-My-Pixel and Root-My-Pixel-Pixel6a.
 
 This is the only solution for Google Pixel 8a (akita, build id: CP2A.260805.005)
+The phone ws locked to the T-Mobile US / Sprint network ecosystem, but configured to allow specific virtual operators (MVNOs) and sub-brands via GID1 (Group Identifier 1) codes.
 
 Files:
 ./modules/ksud-pixel - extracted from assets from Root-My-Pixel apk: assets/ksud/ksud

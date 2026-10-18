@@ -2,6 +2,8 @@
 # Remove the confirmed OobConfig carrier-lock enforcer for Android user 0.
 set -euo pipefail
 
+ADB=${ADB:-adb}
+BASE_DIR="$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd)"
 PACKAGE="com.google.android.apps.work.oobconfig"
 SUPPORTED_DEVICE="akita"
 SUPPORTED_BUILD="CP2A.260805.005"
@@ -12,44 +14,22 @@ log() { printf "[%s] %s\n" "$(date +%T)" "$*"; }
 err() { printf "ERROR: %s\n" "$*" >&2; }
 warn() { printf "WARNING: %s\n" "$*" >&2; }
 
-# Find adb
-ADB=${ADB:-/mnt/c/platform-tools/adb.exe}
-if [[ "$ADB" == "adb" && ! -x "$(command -v adb 2>/dev/null || true)" ]]; then
-  for candidate in \
-    "/usr/local/share/android-commandlinetools/platform-tools/adb" \
-    "$HOME/Library/Android/sdk/platform-tools/adb"; do
-    if [[ -x "$candidate" ]]; then
-      ADB="$candidate"
-      break
-    fi
-  done
-fi
-if ! command -v "$ADB" >/dev/null 2>&1; then
-  err "adb not found: $ADB"
-  exit 1
-fi
-
 # xmlstarlet is required for safe XML edits
 if ! command -v xmlstarlet >/dev/null 2>&1; then
   err "xmlstarlet is required but not found. Install xmlstarlet and retry."
   exit 1
 fi
 
-BASE_DIR="$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd)"
-HELPER_JAR="$BASE_DIR/carrier-unlock.jar"
-if [[ ! -f "$HELPER_JAR" ]]; then
-  err "missing $HELPER_JAR; run tools/carrier-unlock/build.sh first"
-  exit 1
-fi
-
-log "Applying oobconfig fix..."
 
 # Ensure device is booted
+log "Ensuring that device is booted..."
 BOOTED="$($ADB shell getprop sys.boot_completed 2>/dev/null || true)"
 BOOTED="$(echo "$BOOTED" | tr -d '\r')"
 if [[ "$BOOTED" != "1" ]]; then
-  err "device is not fully booted"
+  err "Device is not fully booted."
   exit 1
+else
+  log "Device is booted."
 fi
 
 DEVICE="$($ADB shell getprop ro.product.device 2>/dev/null | tr -d '\r')"
@@ -90,8 +70,6 @@ trap cleanup_local EXIT
 
 PLAIN="$TMPDIR/package-restrictions.xml"
 PATCHED="$TMPDIR/package-restrictions.patched.xml"
-
-state_replaced=0
 
 # Run preparation on-device: disable network, backup state, convert ABX->XML into REMOTE_TMP
 log "disabling Wi-Fi and staging package state..."
@@ -139,11 +117,10 @@ if [[ "$COUNT" != "1" ]]; then
   exit 1
 fi
 
-log "pushing patched xml and helper jar to device"
+log "pushing patched xml to device"
 $ADB push "$PATCHED" "${REMOTE_TMP}/package-restrictions.patched.xml" >/dev/null
-$ADB push "$HELPER_JAR" "${REMOTE_TMP}/carrier-unlock.jar" >/dev/null
 
-log "verifying ABX, clearing carrier rules, and replacing package state..."
+log "verifying ABX and replacing package state..."
 set +e
 TRANSACTION_OUTPUT=$($ADB shell "$KSUD debug su" <<EOF || true
 set -eu
@@ -155,7 +132,6 @@ pid=
 pidof ${PACKAGE} >/dev/null 2>&1 && pid=
 pidof ${PACKAGE} || true
 [ -z "\$pid" ] || kill -9 \$pid
-CLASSPATH='${REMOTE_TMP}/carrier-unlock.jar' app_process / CarrierUnlock clear
 
 new_main='${STATE_DIR}/package-restrictions.oobconfig-new'
 new_reserve='${STATE_DIR}/package-restrictions.oobconfig-reserve-new'
@@ -169,7 +145,6 @@ mv -f "\$new_reserve" '${RESERVE}'
 rm -rf '${REMOTE_TMP}'
 sync
 echo STATE_REPLACED
-(reboot) >/dev/null 2>&1 &
 EOF
 )
 set -e
@@ -180,17 +155,14 @@ if ! grep -q "STATE_REPLACED" <<<"$TRANSACTION_OUTPUT"; then
   if [[ -n "$TRANSACTION_OUTPUT" ]]; then
     warn "$TRANSACTION_OUTPUT"
   fi
-  # cleanup/network restore attempt
-  warn "root transaction did not confirm state replacement; attempting network restore/cleanup"
-  set +e
-  $ADB shell "$KSUD debug su" <<EOF || true
-svc wifi enable; svc data enable; rm -rf '${REMOTE_TMP}'
-EOF
-  set -e
   err "root transaction failed or did not confirm state replacement"
   exit 1
 fi
 
-state_replaced=1
-log "package state replaced; root shell requested immediate reboot"
+log "clearing modem rules..."
+$ADB shell "$KSUD debug su" <<EOF || true
+set -eu
+service call phone 151 i32 1 i32 0 i32 0 i32 1 i32 0 i32 0 i32 0 i32 0 i32 0
+EOF
+
 exit 0
