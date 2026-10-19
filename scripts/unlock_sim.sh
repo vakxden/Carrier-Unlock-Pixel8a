@@ -21,12 +21,30 @@ KSUD="/data/local/tmp/ksud-pixel"
 PACKAGE="com.google.android.apps.work.oobconfig"
 REMOTE_TMP="/data/local/tmp/oobconfig-fix"
 
-log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+log() { printf '[%s] %s\n' "$(date +%H:%M:%S.%N)" "$*" >&2; }
 err() { printf "ERROR: %s\n" "$*" >&2; }
 warn() { printf "WARNING: %s\n" "$*" >&2; }
 
 # Redirect the whole script's output to log file
 exec > >(tee -a "$LOG") 2>&1
+
+# Sync time between logs
+log "Setting up NTP server settings..."
+# Change NTP server
+$ADB shell settings put global ntp_server pool.ntp.org
+# Enable WiFi
+$ADB shell "$KSUD debug su" <<EOF
+set -eu
+echo Enabling WiFi...
+svc wifi enable
+sleep 5
+EOF
+# Check current NTP server
+$ADB shell settings get global ntp_server
+# Force the system to re-read the network time from the server
+$ADB shell cmd network_time_update_service force_refresh
+# Verify if time aligned
+$ADB shell date +%T; date +%T
 
 # Log the device details
 DEVICE="$($ADB shell getprop ro.product.device 2>/dev/null | tr -d '\r')"
@@ -223,14 +241,30 @@ echo Done.
 EOF
 log "Modem rules cleared."
 
-# DEBUG
+# DEBUG START
+log "Terminating ${PACKAGE} package again (if it is currently running)..."
 $ADB shell "$KSUD debug su" <<EOF || true
 set -eu
-echo dmesg:
-dmesg | tail -50
-echo logcat:
-logcat -t 50
+pid=
+pidof ${PACKAGE} >/dev/null 2>&1 && pid=
+pidof ${PACKAGE} || true
+echo Found PID: \<\$pid\>.
+[ -z "\$pid" ] || kill -9 \$pid
 EOF
+
+RULES_AFTER=$(${BASE_DIR}/tools/parse_carrier_lock.sh)
+log "Modem rules after:"
+log "${RULES_AFTER}"
+
+$ADB shell "$KSUD debug su" <<EOF || true
+set -eu
+echo dmesg \(100 last lines\):
+dmesg | tail -100
+echo logcat \(300 last lines\):
+logcat -t 300
+EOF
+
+# DEBUG END
 
 # Reboot the device because PackageManager still has the old insalled state in memory
 log "Rebooting smartphone..."
@@ -260,7 +294,7 @@ sleep 5
 log "Done."
 
 RULES_AFTER=$(${BASE_DIR}/tools/parse_carrier_lock.sh)
-log "Modem rules after:"
+log "Modem rules after reboot:"
 log "${RULES_AFTER}"
 
 log "Script finished its work."
