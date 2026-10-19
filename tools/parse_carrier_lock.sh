@@ -1,98 +1,92 @@
 #!/usr/bin/env bash
+# Usage: parse_carrier_lock.sh [dump_file]   (default: query device via adb)
 
-# 1. Fetch raw data
-RAW_DUMP=$(adb shell "service call phone 152 s16 com.android.shell")
+if [[ -n $1 ]]; then
+    RAW=$(<"$1")
+else
+    RAW=$(adb shell "service call phone 152 s16 com.android.shell")
+fi
 
-# 2. Extract clean space-separated list of 32-bit hex values natively
-WORDS=$(echo "$RAW_DUMP" | grep '^0x' | cut -d: -f2 | cut -d\' -f1 | tr '\n' ' ' | tr -s ' ')
-
-# 3. Clean raw text representation column stream
-TEXT_STREAM=$(echo "$RAW_DUMP" | grep '^0x' | cut -d"'" -f2 | tr -d '\r\n')
-
-# 4. Process layout
-echo "$WORDS|$TEXT_STREAM" | awk -F'|' '
-# --- UTILITY: Convert Hex String to ASCII text and map Sub-brands ---
-function decode_gid(hex_val) {
-    if (hex_val == "ANY") return "ANY"
-    
-    # Manually decode known raw text-to-hex constants
-    if (hex_val == "544D") return "TM (T-Mobile)"
-    if (hex_val == "6D38") return "m8 (Metro)"
-    if (hex_val == "1A53") return "1A53 (Mint/Ultra MVNO)"
-    
-    # Fallback: Dynamic ASCII translator for custom/unknown 2-4 byte hex text strings
-    ascii_out = ""
-    for (idx = 1; idx <= length(hex_val); idx += 2) {
-        pair = substr(hex_val, idx, 2)
-        dec = strtonum("0x" pair)
-        if (dec > 31 && dec < 127) {
-            ascii_out = ascii_out sprintf("%c", dec)
-        }
-    }
-    
-    if (ascii_out ~ /^[A-Za-z0-9]+$/) {
-        return ascii_out " (Custom Tag)"
-    }
-    return hex_val
+echo "$RAW" \
+  | sed -nE "s/^0x[0-9a-fA-F]+: *([0-9a-fA-F ]*)'.*/\1/p" \
+  | tr -s ' \n' ' ' \
+  | gawk '
+function u32(i)  { return strtonum("0x" w[i]) }
+function rd_int(  v) {
+    if (pos > nw) { print "ERROR: parcel truncated at word " pos > "/dev/stderr"; exit 1 }
+    v = u32(pos++)
+    return v >= 2147483648 ? v - 4294967296 : v
 }
-
-{
-    split($1, words, " ")
-    text_raw = $2
+# String16: int32 char count (-1 = null), UTF-16LE chars + NUL, padded to 4 bytes
+function rd_str(  len, n, i, v, c, out) {
+    len = rd_int()
+    if (len < 0) return "<null>"
+    n = int(((len + 1) * 2 + 3) / 4)
+    if (pos + n - 1 > nw) { print "ERROR: string overruns parcel at word " pos > "/dev/stderr"; exit 1 }
+    out = ""
+    for (i = 0; i < len; i++) {
+        v = u32(pos + int(i / 2))
+        c = (i % 2 == 0) ? v % 65536 : int(v / 65536)
+        out = out (c >= 32 && c < 127 ? sprintf("%c", c) : "?")
+    }
+    pos += n
+    return out
 }
+function rd_carrier_list(label,  n, i, nn, mcc, mnc, spn, imsi, gid1, gid2, cid, scid) {
+    n = rd_int()
+    if (n < 0) { printf "%s: <null list>\n", label; return }
+    printf "%s: %d\n", label, n
+    for (i = 1; i <= n; i++) {
+        nn = rd_int()
+        if (nn == 0) { printf "  #%d <null>\n", i; continue }
+        mcc = rd_str(); mnc = rd_str(); spn = rd_str(); imsi = rd_str(); gid1 = rd_str(); gid2 = rd_str()
+        cid = rd_int(); scid = rd_int()
+        printf "  #%d MCC=%s MNC=%s SPN=%s IMSI=%s GID1=%s GID2=%s carrierId=%d specificCarrierId=%d\n", \
+               i, mcc, mnc, spn, imsi, gid1, gid2, cid, scid
+    }
+}
+function name(v, names) { return (v in names) ? names[v] : "UNKNOWN" }
+{ nw = split($0, w, " ") }
 END {
-    # Exact counts from fixed parcel structure positions (Word 3 and Word 4)
-    ac = strtonum("0x" words[3])
-    ec = strtonum("0x" words[4])
+    pos = 1
+    ex = rd_int()
+    if (ex != 0) { printf "ERROR: Binder exception code %d\n", ex > "/dev/stderr"; exit 1 }
+    if (rd_int() == 0) { print "Result: null CarrierRestrictionRules"; exit 0 }
+
+    dflt[0] = "CARRIER_RESTRICTION_DEFAULT_NOT_ALLOWED"; dflt[1] = "CARRIER_RESTRICTION_DEFAULT_ALLOWED"
+    pol[0] = "MULTISIM_POLICY_NONE"
+    pol[1] = "MULTISIM_POLICY_ONE_VALID_SIM_MUST_BE_PRESENT"
+    pol[2] = "MULTISIM_POLICY_APPLY_TO_ALL_SLOTS"
+    pol[3] = "MULTISIM_POLICY_APPLY_TO_ONLY_SLOT_1"
+    pol[4] = "MULTISIM_POLICY_VALID_SIM_MUST_PRESENT_ON_SLOT_1"
+    pol[5] = "MULTISIM_POLICY_ACTIVE_SERVICE_ON_SLOT_1_TO_UNBLOCK_OTHER_SLOTS"
+    pol[6] = "MULTISIM_POLICY_ACTIVE_SERVICE_ON_ANY_SLOT_TO_UNBLOCK_OTHER_SLOTS"
+    pol[7] = "MULTISIM_POLICY_ALL_SIMS_MUST_BE_VALID"
+    pol[8] = "MULTISIM_POLICY_SLOT_POLICY_OTHER"
+    sts[0] = "STATUS_UNKNOWN (default)"; sts[1] = "NOT_RESTRICTED (all carriers allowed)"
 
     print "=========================================================="
-    print "DIAGNOSTIC REPORT: CARRIER RESTRICTION INTERFACES"
+    print "CARRIER RESTRICTION RULES"
     print "=========================================================="
-    printf "Allowed Configurations Found : %d\n", ac
-    printf "Excluded Configurations Found: %d\n", ec
-    
-    # Strip dots out of the string column stream to tokenize textual IDs
-    gsub(/\./, " ", text_raw)
-    gsub(/ +/, " ", text_raw)
-    total_tokens = split(text_raw, tokens, " ")
-    
-    t_idx = 1
-    
-    # Skip any random trailing header digits (like the standalone 3) before parsing profiles
-    while (t_idx <= total_tokens && length(tokens[t_idx]) == 1) {
-        t_idx++
+    rd_carrier_list("Allowed carriers")
+    rd_carrier_list("Excluded carriers")
+    d = rd_int(); m = rd_int(); s = rd_int()
+    printf "Policy Config Default Type: %d (%s)\n", d, name(d, dflt)
+    printf "Multi-SIM Behavior Policy : %d (%s)\n", m, name(m, pol)
+    printf "Restriction Status        : %d (%s)\n", s, name(s, sts)
+    ai = rd_int()
+    if (ai != 0) {
+        printf "Allowed CarrierInfo list  : %d (element layout not decoded; remaining fields skipped)\n", ai
+        exit 0
     }
-    
-    if (ac > 0) {
-        print "\n[+] ALLOWED CARRIERS DECODED LOGIC:"
-        for (i = 1; i <= ac; i++) {
-            mcc = "ANY"; mnc = "ANY"; gid = "ANY";
-            
-            if (t_idx <= total_tokens && length(tokens[t_idx]) == 3 && tokens[t_idx] ~ /^[0-9]+$/) mcc = tokens[t_idx++]
-            if (t_idx <= total_tokens && (length(tokens[t_idx]) == 2 || length(tokens[t_idx]) == 3) && tokens[t_idx] ~ /^[0-9]+$/) mnc = tokens[t_idx++]
-            if (t_idx <= total_tokens && tokens[t_idx] ~ /^[0-9A-Za-z]{2,4}$/ && tokens[t_idx] !~ /^[0-9]{3}$/) gid = tokens[t_idx++]
-            
-            printf "  [ALLOWED #%d] MCC: %-4s | MNC: %-4s | GID1: %s\n", i, mcc, mnc, decode_gid(gid)
-        }
+    ei = rd_int()
+    if (ei != 0) {
+        printf "Excluded CarrierInfo list : %d (element layout not decoded; remaining fields skipped)\n", ei
+        exit 0
     }
-    
-    if (ec > 0) {
-        print "\n[-] EXCLUDED CARRIERS DECODED LOGIC:"
-        for (j = 1; j <= ec; j++) {
-            mcc = "ANY"; mnc = "ANY"; gid = "ANY";
-            
-            if (t_idx <= total_tokens && length(tokens[t_idx]) == 3 && tokens[t_idx] ~ /^[0-9]+$/) mcc = tokens[t_idx++]
-            if (t_idx <= total_tokens && (length(tokens[t_idx]) == 2 || length(tokens[t_idx]) == 3) && tokens[t_idx] ~ /^[0-9]+$/) mnc = tokens[t_idx++]
-            if (t_idx <= total_tokens && tokens[t_idx] ~ /^[0-9A-Za-z]{2,4}$/) gid = tokens[t_idx++]
-            
-            printf "  [EXCLUDED #%d] MCC: %-4s | MNC: %-4s | GID1: %s\n", j, mcc, mnc, decode_gid(gid)
-        }
-    }
-    
-    print "\n=========================================================="
-    print "Policy Config Default Type: 3 (LOCKED_BY_DEFAULT)"
-    print "Multi-SIM Behavior Policy : 0 (MULTISIM_POLICY_NONE)"
+    print "Allowed/Excluded CarrierInfo: 0 / 0"
+    printf "Use carrier lock info     : %s\n", rd_int() ? "true" : "false"
+    if (pos <= nw) printf "WARNING: %d unparsed trailing word(s)\n", nw - pos + 1
     print "=========================================================="
-}
-'
+}'
 
