@@ -48,6 +48,7 @@ function rd_str8(    len, s, k, w, nwords) {
     return s
 }
 
+# Based on framefork src: sources/android/hardware/radio/sim/CarrierRestrictions.java
 function policy_name(v) {
     return (v == 0) ? "CARRIER_RESTRICTION_DEFAULT_NOT_ALLOWED" : (v == 1) ? "CARRIER_RESTRICTION_DEFAULT_ALLOWED" : "UNKNOWN"
 }
@@ -64,7 +65,7 @@ function multisim_name(v) {
     return "UNKNOWN"
 }
 function status_name(v) {
-    return (v == 0) ? "NOT_RESTRICTED" : (v == 1) ? "RESTRICTED" : (v == 2) ? "UNKNOWN" : "?"
+    return (v == 0) ? "UNKNOWN" : (v == 1) ? "NOT_RESTRICTED" : (v == 2) ? "RESTRICTED" : "?"
 }
 
 # CarrierIdentifier list: [1][mcc][mnc][spn][imsi][gid1][gid2][carrierId][specificCarrierId]
