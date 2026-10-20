@@ -236,7 +236,7 @@ log "${RULES_BEFORE}"
 $ADB shell "$KSUD debug su" <<EOF || true
 set -eu
 echo Calling \<service call phone 151\> with some params...
-service call phone 151 i32 1 i32 0 i32 0 i32 1 i32 0 i32 0 i32 0 i32 0 i32 0
+service call phone 151 i32 1 i32 0 i32 0 i32 1 i32 0 i32 1 i32 0 i32 0 i32 0
 echo Done.
 EOF
 log "Modem rules cleared."
